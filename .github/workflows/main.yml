@@ -1,0 +1,123 @@
+name: 'deploy terraform infra'
+
+on:
+  push:
+    branches:
+      - '*'
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  deploy-infra:
+    name: 'Terraform Build & Deploy'
+    runs-on: ubuntu-latest
+    env:
+      TERRAFORM_VERSION: 1.4.6
+      BACKEND_STORAGE_RESOURCE_GROUP_NAME: storage_resource #put the rg where the storage account where the tfstate should be saved
+      BACKEND_STORAGE_ACCOUNT_NAME: storageaccountfortfstate #put the storage account name where where the tfstate should be saved
+      BACKEND_STORAGE_CONTAINER_NAME: tfstate # put the storage account name where the tfstate file should be saved
+      ARM_USE_OIDC: true
+      ARM_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+      ARM_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+      ARM_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      TFSTATE_KEY: terraform
+      TF_VERSION: 1.4.6
+      TF_VAR_github_repo_url: ${{ github.server_url }}/${{ github.repository }}
+      TF_VAR_gihutb_token: ${{ secrets.TOKEN }} # github access token
+    defaults:
+      run:
+        shell: bash
+    steps:
+    #==================================
+    # Checkout Repository
+    #================================== 
+    # Checkout working branch (if the checkout is not done, the workflow will work on the directories of the main branch)
+    - name: Checkout
+      uses: actions/checkout@v3
+
+    #======================================
+    # Configure connection to azure account
+    #======================================
+    - name: configure-credentials
+      uses: azure/login@v1
+      with:
+        client-id: ${{ secrets.AZURE_CLIENT_ID }}
+        tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+        subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+    #==================================
+    # Setup Terraform
+    #================================== 
+    - name: Setup Terraform
+      uses: hashicorp/setup-terraform@v1
+      with:
+        terraform_version: ${{ env.TERRAFORM_VERSION }}
+        terraform_wrapper: false
+
+    #==================================
+    # Terraform Init
+    #==================================  
+    - name: Terraform Init
+      id: init
+      run: terraform init -reconfigure -upgrade=true
+         -backend-config="resource_group_name=${{ env.BACKEND_STORAGE_RESOURCE_GROUP_NAME }}"
+         -backend-config="storage_account_name=${{ env.BACKEND_STORAGE_ACCOUNT_NAME }}"
+         -backend-config="container_name=${{ env.BACKEND_STORAGE_CONTAINER_NAME }}"
+         -backend-config="key=${{ env.TFSTATE_KEY }}"
+
+    #==================================
+    # Terraform Validate
+    #================================== 
+    - name: Terraform Validate
+      id: validate
+      run: terraform validate
+
+    
+    #==================================
+    # Terraform Plan
+    #================================== 
+    - name: Terraform Plan
+      id: plan
+      run: terraform plan
+
+    
+    #==================================
+    # Terraform Apply
+    #==================================
+    - name: Terraform Apply
+      id: apply
+      run: terraform apply -auto-approve
+
+  build-deploy-app:
+    runs-on: ubuntu-latest
+    needs: deploy-infra
+    steps:
+      - uses: actions/checkout@v2
+
+      - name: configure-credentials
+        uses: azure/login@v1
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Set up Node.js version
+        uses: actions/setup-node@v1
+        with:
+            node-version: '16.x'
+            
+      - name: npm install, build
+        run: |
+          npm install react-scripts
+          npm install
+          npm run build --if-present
+        working-directory: ./app
+
+      - uses: azure/webapps-deploy@v2
+        with:
+          app-name: portfolioreactappbysander # web app name
+          package: ./app
+
+  
